@@ -19,6 +19,7 @@ project(cartographer_ros_msgs)
 set(PACKAGE_DEPENDENCIES
   geometry_msgs
   std_msgs
+  sensor_msgs
 )
 
 find_package(catkin REQUIRED COMPONENTS message_generation ${PACKAGE_DEPENDENCIES})
@@ -34,6 +35,8 @@ add_message_files(
     SubmapTexture.msg
     SensorTopics.msg
     TrajectoryOptions.msg
+    TrajectoryPoseList.msg
+    TrajectoryPoseEntry.msg
 )
 
 add_service_files(
@@ -42,6 +45,7 @@ add_service_files(
     FinishTrajectory.srv
     StartTrajectory.srv
     WriteState.srv
+    SubmapCloudQuery.srv
 )
 
 generate_messages(

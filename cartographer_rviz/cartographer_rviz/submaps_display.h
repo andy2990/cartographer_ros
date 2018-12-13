@@ -29,8 +29,12 @@
 #include "rviz/message_filter_display.h"
 #include "rviz/properties/bool_property.h"
 #include "rviz/properties/float_property.h"
+#include "rviz/properties/int_property.h"
+#include "rviz/default_plugin/point_cloud_common.h"
+#include "rviz/default_plugin/point_cloud_transformers.h"
 #include "tf2_ros/buffer.h"
 #include "tf2_ros/transform_listener.h"
+#include <sensor_msgs/PointCloud2.h>
 
 namespace cartographer_rviz {
 
@@ -66,14 +70,18 @@ class SubmapsDisplay
 
   SubmapsDisplay(const SubmapsDisplay&) = delete;
   SubmapsDisplay& operator=(const SubmapsDisplay&) = delete;
+  void ProcessPointCloud(const sensor_msgs::PointCloud2ConstPtr& cloud);
 
  private Q_SLOTS:
   void Reset();
+  void ResetCloud();
   void AllEnabledToggled();
   void ResolutionToggled();
+  void updateQueueSize();
 
  private:
   void CreateClient();
+  void CreateCloudClient();
 
   // These are called by RViz and therefore do not adhere to the style guide.
   void onInitialize() override;
@@ -85,7 +93,9 @@ class SubmapsDisplay
   ::tf2_ros::Buffer tf_buffer_;
   ::tf2_ros::TransformListener tf_listener_;
   ros::ServiceClient client_;
+  ros::ServiceClient cloud_client_;
   ::rviz::StringProperty* submap_query_service_property_;
+  ::rviz::StringProperty* submap_cloud_query_service_property_;
   std::unique_ptr<std::string> map_frame_;
   ::rviz::StringProperty* tracking_frame_property_;
   Ogre::SceneNode* map_node_ = nullptr;  // Represents the map frame.
@@ -96,6 +106,10 @@ class SubmapsDisplay
   ::rviz::Property* trajectories_category_;
   ::rviz::BoolProperty* visibility_all_enabled_;
   ::rviz::FloatProperty* fade_out_start_distance_in_meters_;
+
+  ::rviz::PointCloudCommon* point_cloud_common_;
+  ::rviz::IntProperty* queue_size_property_;
+  void processMessage( const sensor_msgs::PointCloud2ConstPtr& cloud );
 };
 
 }  // namespace cartographer_rviz

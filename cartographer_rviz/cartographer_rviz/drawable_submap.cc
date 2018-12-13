@@ -27,14 +27,22 @@
 #include "cartographer/common/port.h"
 #include "cartographer_ros/msg_conversion.h"
 #include "cartographer_ros_msgs/SubmapQuery.h"
+#include "cartographer_ros_msgs/SubmapCloudQuery.h"
+#include "cartographer_ros_msgs/StatusCode.h"
+#include "cartographer_ros_msgs/StatusResponse.h"
 #include "eigen_conversions/eigen_msg.h"
 #include "ros/ros.h"
+#include "submaps_display.h"
 
-namespace cartographer_rviz {
+namespace cartographer_rviz
+{
 
-namespace {
+namespace
+{
 
 constexpr std::chrono::milliseconds kMinQueryDelayInMs(250);
+constexpr std::chrono::milliseconds kMinCloudQueryDelayInMs(250);
+constexpr int kMinSubmapVersionDiff = 3;
 constexpr float kAlphaUpdateThreshold = 0.2f;
 
 const Ogre::ColourValue kSubmapIdColor(Ogre::ColourValue::Red);
@@ -42,15 +50,17 @@ const Eigen::Vector3d kSubmapIdPosition(0.0, 0.0, 0.3);
 constexpr float kSubmapIdCharHeight = 0.2f;
 constexpr int kNumberOfSlicesPerSubmap = 2;
 
-}  // namespace
+} // namespace
 
-DrawableSubmap::DrawableSubmap(const ::cartographer::mapping::SubmapId& id,
-                               ::rviz::DisplayContext* const display_context,
-                               Ogre::SceneNode* const map_node,
-                               ::rviz::Property* const submap_category,
+DrawableSubmap::DrawableSubmap(const ::cartographer::mapping::SubmapId &id,
+                               ::rviz::DisplayContext *const display_context,
+                               Ogre::SceneNode *const map_node,
+                               ::rviz::Property *const submap_category,
                                const bool visible, const float pose_axes_length,
-                               const float pose_axes_radius)
+                               const float pose_axes_radius,
+                               ::cartographer_rviz::SubmapsDisplay *pointcloud_drawer)
     : id_(id),
+      pointcloud_drawer_(pointcloud_drawer),
       display_context_(display_context),
       submap_node_(map_node->createChildSceneNode()),
       submap_id_text_node_(submap_node_->createChildSceneNode()),
@@ -60,9 +70,12 @@ DrawableSubmap::DrawableSubmap(const ::cartographer::mapping::SubmapId& id,
                           .arg(id.trajectory_id)
                           .arg(id.submap_index)
                           .toStdString()),
-      last_query_timestamp_(0) {
+      last_query_timestamp_(0),
+      last_cloud_query_timestamp_(0)
+{
   for (int slice_index = 0; slice_index < kNumberOfSlicesPerSubmap;
-       ++slice_index) {
+       ++slice_index)
+  {
     ogre_slices_.emplace_back(::cartographer::common::make_unique<OgreSlice>(
         id, slice_index, display_context->getSceneManager(), submap_node_));
   }
@@ -83,10 +96,12 @@ DrawableSubmap::DrawableSubmap(const ::cartographer::mapping::SubmapId& id,
   connect(this, SIGNAL(RequestSucceeded()), this, SLOT(UpdateSceneNode()));
 }
 
-DrawableSubmap::~DrawableSubmap() {
+DrawableSubmap::~DrawableSubmap()
+{
   // 'query_in_progress_' must be true until the Q_EMIT has happened. Qt then
   // makes sure that 'RequestSucceeded' is not called after our destruction.
-  if (QueryInProgress()) {
+  if (QueryInProgress())
+  {
     rpc_request_future_.wait();
   }
   display_context_->getSceneManager()->destroySceneNode(submap_node_);
@@ -94,8 +109,9 @@ DrawableSubmap::~DrawableSubmap() {
 }
 
 void DrawableSubmap::Update(
-    const ::std_msgs::Header& header,
-    const ::cartographer_ros_msgs::SubmapEntry& metadata) {
+    const ::std_msgs::Header &header,
+    const ::cartographer_ros_msgs::SubmapEntry &metadata)
+{
   ::cartographer::common::MutexLocker locker(&mutex_);
   metadata_version_ = metadata.submap_version;
   pose_ = ::cartographer_ros::ToRigid3d(metadata.pose);
@@ -112,7 +128,65 @@ void DrawableSubmap::Update(
           .arg(metadata_version_));
 }
 
-bool DrawableSubmap::MaybeFetchTexture(ros::ServiceClient* const client) {
+namespace internal
+{
+std::unique_ptr<::cartographer_ros_msgs::SubmapCloudQuery::Response> FetchSubmapCloud(
+    const ::cartographer::mapping::SubmapId &submap_id,
+    ros::ServiceClient *client)
+{
+  ::cartographer_ros_msgs::SubmapCloudQuery srv;
+  srv.request.trajectory_id = submap_id.trajectory_id;
+  srv.request.submap_index = submap_id.submap_index;
+  srv.request.min_probability = 0.6;
+  srv.request.high_resolution = true;
+  if (!client->call(srv) ||
+      srv.response.status.code != ::cartographer_ros_msgs::StatusCode::OK)
+  {
+    return nullptr;
+  }
+  auto response =
+      ::cartographer::common::make_unique<::cartographer_ros_msgs::SubmapCloudQuery::Response>(srv.response);
+  return response;
+}
+} // namespace internal
+
+bool DrawableSubmap::MaybeFetchPointCloud(ros::ServiceClient *const client)
+{
+  ::cartographer::common::MutexLocker locker(&mutex_);
+  const std::chrono::milliseconds now =
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::system_clock::now().time_since_epoch());
+  const bool recently_queried =
+      last_cloud_query_timestamp_ + kMinCloudQueryDelayInMs > now;
+  if (recently_queried || cloud_query_in_progress_)
+  {
+    return false;
+  }
+  cloud_query_in_progress_ = true;
+  last_cloud_query_timestamp_ = now;
+  cloud_request_future_ = std::async(std::launch::async, [this, client]() {
+    std::unique_ptr<::cartographer_ros_msgs::SubmapCloudQuery::Response> response =
+        internal::FetchSubmapCloud(id_, client);
+    ::cartographer::common::MutexLocker locker(&mutex_);
+    cloud_query_in_progress_ = false;
+    if (response != nullptr)
+    {
+      //if (!response->finished || response->submap_version - submap_pointcloud_->submap_version > kMinSubmapVersionDiff)
+      //{
+        auto holder = std::move(submap_pointcloud_);
+        submap_pointcloud_ = std::move(response);
+        if (pointcloud_drawer_)
+        {
+          pointcloud_drawer_->ProcessPointCloud(boost::make_shared<sensor_msgs::PointCloud2>(submap_pointcloud_->cloud));
+        }
+      //}
+    }
+  });
+  return true;
+}
+
+bool DrawableSubmap::MaybeFetchTexture(ros::ServiceClient *const client)
+{
   ::cartographer::common::MutexLocker locker(&mutex_);
   // Received metadata version can also be lower if we restarted Cartographer.
   const bool newer_version_available =
@@ -123,7 +197,8 @@ bool DrawableSubmap::MaybeFetchTexture(ros::ServiceClient* const client) {
           std::chrono::system_clock::now().time_since_epoch());
   const bool recently_queried =
       last_query_timestamp_ + kMinQueryDelayInMs > now;
-  if (!newer_version_available || recently_queried || query_in_progress_) {
+  if (!newer_version_available || recently_queried || query_in_progress_)
+  {
     return false;
   }
   query_in_progress_ = true;
@@ -133,7 +208,8 @@ bool DrawableSubmap::MaybeFetchTexture(ros::ServiceClient* const client) {
         ::cartographer_ros::FetchSubmapTextures(id_, client);
     ::cartographer::common::MutexLocker locker(&mutex_);
     query_in_progress_ = false;
-    if (submap_textures != nullptr) {
+    if (submap_textures != nullptr)
+    {
       // We emit a signal to update in the right thread, and pass via the
       // 'submap_texture_' member to simplify the signal-slot connection
       // slightly.
@@ -144,13 +220,15 @@ bool DrawableSubmap::MaybeFetchTexture(ros::ServiceClient* const client) {
   return true;
 }
 
-bool DrawableSubmap::QueryInProgress() {
+bool DrawableSubmap::QueryInProgress()
+{
   ::cartographer::common::MutexLocker locker(&mutex_);
   return query_in_progress_;
 }
 
 void DrawableSubmap::SetAlpha(const double current_tracking_z,
-                              const float fade_out_start_distance_in_meters) {
+                              const float fade_out_start_distance_in_meters)
+{
   const float fade_out_distance_in_meters =
       2.f * fade_out_start_distance_in_meters;
   const double distance_z =
@@ -161,35 +239,42 @@ void DrawableSubmap::SetAlpha(const double current_tracking_z,
       std::max(0., 1. - fade_distance / fade_out_distance_in_meters));
 
   if (std::abs(target_alpha - current_alpha_) > kAlphaUpdateThreshold ||
-      target_alpha == 0.f || target_alpha == 1.f) {
+      target_alpha == 0.f || target_alpha == 1.f)
+  {
     current_alpha_ = target_alpha;
   }
-  for (auto& slice : ogre_slices_) {
+  for (auto &slice : ogre_slices_)
+  {
     slice->SetAlpha(current_alpha_);
   }
   display_context_->queueRender();
 }
 
-void DrawableSubmap::SetSliceVisibility(size_t slice_index, bool visible) {
+void DrawableSubmap::SetSliceVisibility(size_t slice_index, bool visible)
+{
   ogre_slices_.at(slice_index)->SetVisibility(visible);
   ToggleVisibility();
 }
 
-void DrawableSubmap::UpdateSceneNode() {
+void DrawableSubmap::UpdateSceneNode()
+{
   ::cartographer::common::MutexLocker locker(&mutex_);
   for (size_t slice_index = 0; slice_index < ogre_slices_.size() &&
                                slice_index < submap_textures_->textures.size();
-       ++slice_index) {
+       ++slice_index)
+  {
     ogre_slices_[slice_index]->Update(submap_textures_->textures[slice_index]);
   }
   display_context_->queueRender();
 }
 
-void DrawableSubmap::ToggleVisibility() {
-  for (auto& ogre_slice : ogre_slices_) {
+void DrawableSubmap::ToggleVisibility()
+{
+  for (auto &ogre_slice : ogre_slices_)
+  {
     ogre_slice->UpdateOgreNodeVisibility(visibility_->getBool());
   }
   display_context_->queueRender();
 }
 
-}  // namespace cartographer_rviz
+} // namespace cartographer_rviz

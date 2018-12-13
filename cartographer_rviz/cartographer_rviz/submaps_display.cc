@@ -22,6 +22,7 @@
 #include "cartographer/mapping/id.h"
 #include "cartographer_ros_msgs/SubmapList.h"
 #include "cartographer_ros_msgs/SubmapQuery.h"
+#include "cartographer_ros_msgs/SubmapCloudQuery.h"
 #include "geometry_msgs/TransformStamped.h"
 #include "pluginlib/class_list_macros.h"
 #include "ros/package.h"
@@ -30,24 +31,34 @@
 #include "rviz/frame_manager.h"
 #include "rviz/properties/bool_property.h"
 #include "rviz/properties/string_property.h"
+#include "rviz/properties/int_property.h"
+#include "rviz/default_plugin/point_cloud_common.h"
+#include "rviz/default_plugin/point_cloud_transformers.h"
+#include "rviz/ogre_helpers/point_cloud.h"
+#include "rviz/validate_floats.h"
 
 namespace cartographer_rviz {
 
 namespace {
 
-constexpr int kMaxOnGoingRequestsPerTrajectory = 6;
+constexpr int kMaxOnGoingRequestsPerTrajectory = 12;
 constexpr char kMaterialsDirectory[] = "/ogre_media/materials";
 constexpr char kGlsl120Directory[] = "/glsl120";
 constexpr char kScriptsDirectory[] = "/scripts";
 constexpr char kDefaultTrackingFrame[] = "base_link";
 constexpr char kDefaultSubmapQueryServiceName[] = "/submap_query";
+constexpr char kDefaultSubmapCloudQueryServiceName[] = "/submap_cloud_query";
 
 }  // namespace
 
-SubmapsDisplay::SubmapsDisplay() : tf_listener_(tf_buffer_) {
+SubmapsDisplay::SubmapsDisplay() : tf_listener_(tf_buffer_), point_cloud_common_( new ::rviz::PointCloudCommon( this )) 
+{
   submap_query_service_property_ = new ::rviz::StringProperty(
       "Submap query service", kDefaultSubmapQueryServiceName,
       "Submap query service to connect to.", this, SLOT(Reset()));
+  submap_cloud_query_service_property_ = new ::rviz::StringProperty(
+      "Submap pointcloud query service", kDefaultSubmapCloudQueryServiceName,
+      "Submap pointcloud query service to connect to.", this, SLOT(ResetCloud()));
   tracking_frame_property_ = new ::rviz::StringProperty(
       "Tracking frame", kDefaultTrackingFrame,
       "Tracking frame, used for fading out submaps.", this);
@@ -58,6 +69,7 @@ SubmapsDisplay::SubmapsDisplay() : tf_listener_(tf_buffer_) {
       "Low Resolution", false, "Display low resolution slices.", this,
       SLOT(ResolutionToggled()), this);
   client_ = update_nh_.serviceClient<::cartographer_ros_msgs::SubmapQuery>("");
+  cloud_client_ = update_nh_.serviceClient<::cartographer_ros_msgs::SubmapCloudQuery>("");
   trajectories_category_ = new ::rviz::Property(
       "Submaps", QVariant(), "List of all submaps, organized by trajectories.",
       this);
@@ -70,6 +82,11 @@ SubmapsDisplay::SubmapsDisplay() : tf_listener_(tf_buffer_) {
                                 "Distance in meters in z-direction beyond "
                                 "which submaps will start to fade out.",
                                 this);
+  queue_size_property_ = new ::rviz::IntProperty( "Queue Size", 10,
+                                          "Advanced: set the size of the incoming PointCloud2 message queue. "
+                                          " Increasing this is useful if your incoming TF data is delayed significantly "
+                                          "from your PointCloud2 data, but it can greatly increase memory usage if the messages are big.",
+                                          this, SLOT( updateQueueSize() ));
   const std::string package_path = ::ros::package::getPath(ROS_PACKAGE_NAME);
   Ogre::ResourceGroupManager::getSingleton().addResourceLocation(
       package_path + kMaterialsDirectory, "FileSystem", ROS_PACKAGE_NAME);
@@ -80,12 +97,26 @@ SubmapsDisplay::SubmapsDisplay() : tf_listener_(tf_buffer_) {
       package_path + kMaterialsDirectory + kScriptsDirectory, "FileSystem",
       ROS_PACKAGE_NAME);
   Ogre::ResourceGroupManager::getSingleton().initialiseAllResourceGroups();
+
+  update_nh_.setCallbackQueue( point_cloud_common_->getCallbackQueue() );
 }
 
 SubmapsDisplay::~SubmapsDisplay() {
   client_.shutdown();
+  cloud_client_.shutdown();
   trajectories_.clear();
   scene_manager_->destroySceneNode(map_node_);
+  delete point_cloud_common_;
+}
+
+void SubmapsDisplay::ProcessPointCloud(const sensor_msgs::PointCloud2ConstPtr& cloud)
+{
+  processMessage(cloud);
+}
+
+void SubmapsDisplay::updateQueueSize()
+{
+  tf_filter_->setQueueSize( (uint32_t) queue_size_property_->getInt() );
 }
 
 void SubmapsDisplay::Reset() { reset(); }
@@ -95,10 +126,17 @@ void SubmapsDisplay::CreateClient() {
       submap_query_service_property_->getStdString());
 }
 
+void SubmapsDisplay::CreateCloudClient() {
+  cloud_client_ = update_nh_.serviceClient<::cartographer_ros_msgs::SubmapCloudQuery>(
+    submap_cloud_query_service_property_->getStdString());
+}
+
 void SubmapsDisplay::onInitialize() {
   MFDClass::onInitialize();
   map_node_ = scene_manager_->getRootSceneNode()->createChildSceneNode();
   CreateClient();
+  CreateCloudClient();
+  point_cloud_common_->initialize( context_, scene_node_ );
 }
 
 void SubmapsDisplay::reset() {
@@ -107,6 +145,14 @@ void SubmapsDisplay::reset() {
   client_.shutdown();
   trajectories_.clear();
   CreateClient();
+}
+
+void SubmapsDisplay::ResetCloud() {
+  MFDClass::reset();
+  ::cartographer::common::MutexLocker locker(&mutex_);
+  point_cloud_common_->reset();
+  cloud_client_.shutdown();
+  CreateCloudClient();
 }
 
 void SubmapsDisplay::processMessage(
@@ -157,7 +203,7 @@ void SubmapsDisplay::processMessage(
           ::cartographer::common::make_unique<DrawableSubmap>(
               id, context_, map_node_, trajectory_visibility.get(),
               trajectory_visibility->getBool(), kSubmapPoseAxesLength,
-              kSubmapPoseAxesRadius));
+              kSubmapPoseAxesRadius, this));
       trajectory_submaps.at(id.submap_index)
           ->SetSliceVisibility(0, slice_high_resolution_enabled_->getBool());
       trajectory_submaps.at(id.submap_index)
@@ -181,8 +227,102 @@ void SubmapsDisplay::processMessage(
   }
 }
 
+void SubmapsDisplay::processMessage( const sensor_msgs::PointCloud2ConstPtr& cloud )
+{
+  using namespace rviz;
+  // Filter any nan values out of the cloud.  Any nan values that make it through to PointCloudBase
+  // will get their points put off in lala land, but it means they still do get processed/rendered
+  // which can be a big performance hit
+  sensor_msgs::PointCloud2Ptr filtered(new sensor_msgs::PointCloud2);
+  int32_t xi = findChannelIndex(cloud, "x");
+  int32_t yi = findChannelIndex(cloud, "y");
+  int32_t zi = findChannelIndex(cloud, "z");
+
+  if (xi == -1 || yi == -1 || zi == -1)
+  {
+    return;
+  }
+
+  const uint32_t xoff = cloud->fields[xi].offset;
+  const uint32_t yoff = cloud->fields[yi].offset;
+  const uint32_t zoff = cloud->fields[zi].offset;
+  const uint32_t point_step = cloud->point_step;
+  const size_t point_count = cloud->width * cloud->height;
+
+  if( point_count * point_step != cloud->data.size() )
+  {
+    std::stringstream ss;
+    ss << "Data size (" << cloud->data.size() << " bytes) does not match width (" << cloud->width
+       << ") times height (" << cloud->height << ") times point_step (" << point_step << ").  Dropping message.";
+    setStatusStd( StatusProperty::Error, "Message", ss.str() );
+    return;
+  }
+
+  filtered->data.resize(cloud->data.size());
+  uint32_t output_count;
+  if (point_count == 0)
+  {
+    output_count = 0;
+  } else {
+    uint8_t* output_ptr = &filtered->data.front();
+    const uint8_t* ptr = &cloud->data.front(), *ptr_end = &cloud->data.back(), *ptr_init;
+    size_t points_to_copy = 0;
+    for (; ptr < ptr_end; ptr += point_step)
+    {
+      float x = *reinterpret_cast<const float*>(ptr + xoff);
+      float y = *reinterpret_cast<const float*>(ptr + yoff);
+      float z = *reinterpret_cast<const float*>(ptr + zoff);
+      if (validateFloats(x) && validateFloats(y) && validateFloats(z))
+      {
+        if (points_to_copy == 0)
+        {
+          // Only memorize where to start copying from
+          ptr_init = ptr;
+          points_to_copy = 1;
+        }
+        else
+        {
+          ++points_to_copy;
+        }
+      }
+      else
+      {
+        if (points_to_copy)
+        {
+          // Copy all the points that need to be copied
+          memcpy(output_ptr, ptr_init, point_step*points_to_copy);
+          output_ptr += point_step*points_to_copy;
+          points_to_copy = 0;
+        }
+      }
+    }
+    // Don't forget to flush what needs to be copied
+    if (points_to_copy)
+    {
+      memcpy(output_ptr, ptr_init, point_step*points_to_copy);
+      output_ptr += point_step*points_to_copy;
+    }
+    output_count = (output_ptr - &filtered->data.front()) / point_step;
+  }
+
+  filtered->header = cloud->header;
+  filtered->fields = cloud->fields;
+  filtered->data.resize(output_count * point_step);
+  filtered->height = 1;
+  filtered->width = output_count;
+  filtered->is_bigendian = cloud->is_bigendian;
+  filtered->point_step = point_step;
+  filtered->row_step = output_count;
+
+  point_cloud_common_->addMessage( filtered );
+}
+
+
 void SubmapsDisplay::update(const float wall_dt, const float ros_dt) {
   ::cartographer::common::MutexLocker locker(&mutex_);
+
+  point_cloud_common_->update( wall_dt, ros_dt );
+
   // Schedule fetching of new submap textures.
   for (const auto& trajectory : trajectories_) {
     int num_ongoing_requests = 0;
@@ -196,6 +336,10 @@ void SubmapsDisplay::update(const float wall_dt, const float ros_dt) {
          num_ongoing_requests < kMaxOnGoingRequestsPerTrajectory;
          ++it) {
       if (it->second->MaybeFetchTexture(&client_)) {
+        ++num_ongoing_requests;
+      }
+      if(it->second->MaybeFetchPointCloud(&cloud_client_))
+      {
         ++num_ongoing_requests;
       }
     }
