@@ -31,7 +31,6 @@
 #include "cartographer_ros/submap.h"
 #include "cartographer_ros_msgs/SubmapEntry.h"
 #include "cartographer_ros_msgs/SubmapQuery.h"
-#include "cartographer_ros_msgs/SubmapCloudQuery.h"
 #include "cartographer_rviz/ogre_slice.h"
 #include "ros/ros.h"
 #include "rviz/display_context.h"
@@ -44,9 +43,6 @@ namespace cartographer_rviz {
 
 // Contains all the information needed to render a submap onto the final
 // texture representing the whole map.
-
-class SubmapsDisplay;
-
 class DrawableSubmap : public QObject {
   Q_OBJECT
 
@@ -54,7 +50,7 @@ class DrawableSubmap : public QObject {
   DrawableSubmap(const ::cartographer::mapping::SubmapId& submap_id,
                  ::rviz::DisplayContext* display_context,
                  Ogre::SceneNode* map_node, ::rviz::Property* submap_category,
-                 bool visible, float pose_axes_length, float pose_axes_radius, ::cartographer_rviz::SubmapsDisplay *pointcloud_drawer=nullptr);
+                 bool visible, float pose_axes_length, float pose_axes_radius);
   ~DrawableSubmap() override;
   DrawableSubmap(const DrawableSubmap&) = delete;
   DrawableSubmap& operator=(const DrawableSubmap&) = delete;
@@ -67,11 +63,9 @@ class DrawableSubmap : public QObject {
   // If an update is needed, it will send an RPC using 'client' to request the
   // new data for the submap and returns true.
   bool MaybeFetchTexture(ros::ServiceClient* client);
-  bool MaybeFetchPointCloud(ros::ServiceClient* client);
 
   // Returns whether an RPC is in progress.
   bool QueryInProgress();
-  bool CloudQueryInProgress();
 
   // Sets the alpha of the submap taking into account its slice height and the
   // 'current_tracking_z'. 'fade_out_start_distance_in_meters' defines the
@@ -102,7 +96,6 @@ class DrawableSubmap : public QObject {
  private:
   const ::cartographer::mapping::SubmapId id_;
 
-  ::cartographer_rviz::SubmapsDisplay* pointcloud_drawer_;
   ::cartographer::common::Mutex mutex_;
   ::rviz::DisplayContext* const display_context_;
   Ogre::SceneNode* const submap_node_;
@@ -112,15 +105,10 @@ class DrawableSubmap : public QObject {
   ::rviz::Axes pose_axes_;
   ::rviz::MovableText submap_id_text_;
   std::chrono::milliseconds last_query_timestamp_ GUARDED_BY(mutex_);
-  std::chrono::milliseconds last_cloud_query_timestamp_ GUARDED_BY(mutex_);
   bool query_in_progress_ GUARDED_BY(mutex_) = false;
-  bool cloud_query_in_progress_ GUARDED_BY(mutex_) = false;
   int metadata_version_ GUARDED_BY(mutex_) = -1;
   std::future<void> rpc_request_future_;
-  std::future<void> cloud_request_future_;
   std::unique_ptr<::cartographer::io::SubmapTextures> submap_textures_
-      GUARDED_BY(mutex_);
-  std::unique_ptr<::cartographer_ros_msgs::SubmapCloudQuery::Response> submap_pointcloud_
       GUARDED_BY(mutex_);
   float current_alpha_ = 0.f;
   std::unique_ptr<::rviz::BoolProperty> visibility_;

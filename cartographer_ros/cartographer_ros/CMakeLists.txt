@@ -124,6 +124,19 @@ install(TARGETS cartographer_dev_trajectory_comparison
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
+
+## (zx1239856) Pointcloud node
+google_binary(cartographer_point_cloud_node
+  SRCS
+    pointcloud/pcl_node_main.cc
+)
+
+install(TARGETS cartographer_point_cloud_node
+  ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
+  LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
+  RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)
+
 # TODO(cschuet): Add support for shared library case.
 if (${BUILD_GRPC})
   google_binary(cartographer_grpc_node

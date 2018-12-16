@@ -15,12 +15,8 @@
 include "map_builder_server.lua"
 
 MAP_BUILDER_SERVER.map_builder.use_trajectory_builder_3d = true
-MAP_BUILDER_SERVER.server_address = "0.0.0.0:55555"
-MAP_BUILDER_SERVER.map_builder.pose_graph.optimize_every_n_nodes = 10
---MAP_BUILDER_SERVER.map_builder.pose_graph.constraint_builder.fast_correlative_scan_matcher_3d.linear_xy_search_window = 512
---MAP_BUILDER_SERVER.map_builder.pose_graph.constraint_builder.fast_correlative_scan_matcher_3d.linear_z_search_window = 4096
--- In our case, it is much better to set this value higher
-MAP_BUILDER_SERVER.map_builder.pose_graph.constraint_builder.ceres_scan_matcher.translation_weight = 2e3
-MAP_BUILDER_SERVER.map_builder.num_background_threads = 8;
+MAP_BUILDER_SERVER.map_builder.pose_graph.optimize_every_n_nodes = 0
+MAP_BUILDER_SERVER.uplink_server_address = "localhost:55555"
+MAP_BUILDER_SERVER.server_address = "localhost:55002"
 
 return MAP_BUILDER_SERVER
