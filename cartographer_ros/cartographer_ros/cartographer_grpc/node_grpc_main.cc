@@ -29,8 +29,7 @@ DEFINE_string(configuration_basename, "",
               "Basename, i.e. not containing any directory prefix, of the "
               "configuration file.");
 DEFINE_string(server_address, "localhost:50051",
-              "gRPC server address to "
-              "stream the sensor data to.");
+              "gRPC server address to stream the sensor data to.");
 DEFINE_bool(
     start_trajectory_with_default_topics, true,
     "Enable to immediately start the first trajectory with default topics.");
@@ -39,7 +38,11 @@ DEFINE_string(
     "If non-empty, serialize state and write it to disk before shutting down.");
 DEFINE_string(load_state_filename, "",
               "If non-empty, filename of a .pbstream file "
-              "to load, containing a saved SLAM state.");
+              "to load, containing a saved SLAM state. "
+              "Unless --upload_load_state_file is set, the filepath refers "
+              "to the gRPC server's file system.");
+DEFINE_string(client_id, "",
+              "Cartographer client ID to use when connecting to the server.");
 
 namespace cartographer_ros {
 namespace {
@@ -55,7 +58,7 @@ void Run() {
 
   auto map_builder =
       cartographer::common::make_unique<::cartographer::cloud::MapBuilderStub>(
-          FLAGS_server_address);
+          FLAGS_server_address, FLAGS_client_id);
   Node node(node_options, std::move(map_builder), &tf_buffer);
 
   if (!FLAGS_load_state_filename.empty()) {
@@ -87,6 +90,7 @@ int main(int argc, char** argv) {
       << "-configuration_directory is missing.";
   CHECK(!FLAGS_configuration_basename.empty())
       << "-configuration_basename is missing.";
+  CHECK(!FLAGS_client_id.empty()) << "-client_id is missing.";
 
   ::ros::init(argc, argv, "cartographer_grpc_node");
   ::ros::start();

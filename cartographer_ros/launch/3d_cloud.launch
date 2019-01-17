@@ -32,6 +32,7 @@
 
   <node name="cartographer_grpc_node" pkg="cartographer_ros"
       type="cartographer_grpc_node" args="
+          -client_id 0
           -configuration_directory $(find cartographer_ros)/configuration_files
           -configuration_basename vlp16.lua
           -server_address localhost:55555"
