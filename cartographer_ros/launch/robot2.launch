@@ -31,6 +31,7 @@
 
   <node name="cartographer_grpc_node" pkg="cartographer_ros"
       type="cartographer_grpc_node" args="
+          -client_id 2
           -configuration_directory $(find cartographer_ros)/configuration_files
           -configuration_basename test_hokuyo_local.lua
           -server_address localhost:55002"
