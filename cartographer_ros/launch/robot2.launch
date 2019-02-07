@@ -36,10 +36,11 @@
           -configuration_basename test_hokuyo_local.lua
           -server_address localhost:55002"
       output="screen">
+  <remap from="/imu" to="/tx2_imu" />
   </node>
 
   <node name="playbag" pkg="rosbag" type="play"
-        args="--clock $(arg bag) --topics /scan /imu" />
+        args="--clock $(arg bag) --topics /scan /tx2_imu" />
   <node name="rviz" pkg="rviz" type="rviz" required="true"
       args="-d $(find cartographer_ros)/configuration_files/test_hokuyo.rviz" />
 </launch>

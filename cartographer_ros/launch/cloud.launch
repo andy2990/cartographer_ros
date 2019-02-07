@@ -16,8 +16,7 @@
 
 <launch>
 <group>
-  <param name="/use_sim_time" value="true" />
-
+  <param name="/use_sim_time" value="false" />
   <param name="robot_description"
     textfile="$(find cartographer_ros)/urdf/test_hokuyo.urdf" />
 
