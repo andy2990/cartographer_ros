@@ -1,0 +1,52 @@
+<!--
+  Copyright 2018 The Cartographer Authors
+
+  Licensed under the Apache License, Version 2.0 (the "License");
+  you may not use this file except in compliance with the License.
+  You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+  Unless required by applicable law or agreed to in writing, software
+  distributed under the License is distributed on an "AS IS" BASIS,
+  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+  See the License for the specific language governing permissions and
+  limitations under the License.
+-->
+
+<launch>
+  <param name="/use_sim_time" value="true" />
+  <node name="master_discovery" pkg="master_discovery_fkie" type="master_discovery">
+  </node>
+  <node name="master_sync" pkg="master_sync_fkie" type="master_sync">
+    <rosparam param="ignore_nodes"> [/rosout, "/*master_sync* node", "remote /*master_discovery* node", "/*node_manager", /*zeroconf, /robot_description, /robot_state_publisher, /cartographer_grpc_node, /playbag] </rosparam>
+    <rosparam param="sync_topics"> ['/robot_0/tf', '/robot_1/tf'] </rosparam>
+  </node>
+  <param name="robot_description"
+    textfile="$(find cartographer_ros)/urdf/test_hokuyo.urdf" />
+
+  <node name="robot_state_publisher" pkg="robot_state_publisher"
+    type="robot_state_publisher" />
+
+  <node name="cartographer_grpc_server" pkg="cartographer_ros"
+      type="cartographer_grpc_server.sh" args="
+          -configuration_directory $(find cartographer_ros)/configuration_files
+          -configuration_basename 2d_universal_server.lua" output="screen">
+  </node>
+
+  <node name="cartographer_grpc_node" pkg="cartographer_ros"
+      type="cartographer_grpc_node" args="
+          -client_id SERVER
+          -configuration_directory $(find cartographer_ros)/configuration_files
+          -configuration_basename test_hokuyo.lua
+          -server_address localhost:55555" output="screen">
+  </node>
+
+  <node name="cartographer_tf_republisher" pkg="cartographer_ros"
+	type="cartographer_tf_republisher" args="
+	-robot_count 3" output="screen" />
+
+  <node name="rviz" pkg="rviz" type="rviz" required="true"
+      args="-d $(find cartographer_ros)/configuration_files/2d_universal_server.rviz" />
+
+</launch>

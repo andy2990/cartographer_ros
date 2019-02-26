@@ -137,6 +137,17 @@ install(TARGETS cartographer_point_cloud_node
   RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
+google_binary(cartographer_tf_republisher
+  SRCS
+    tf_republisher.cc
+)
+
+install(TARGETS cartographer_tf_republisher
+  ARCHIVE DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
+  LIBRARY DESTINATION ${CATKIN_PACKAGE_LIB_DESTINATION}
+  RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)
+
 # TODO(cschuet): Add support for shared library case.
 if (${BUILD_GRPC})
   google_binary(cartographer_grpc_node
